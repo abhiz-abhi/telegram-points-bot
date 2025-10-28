@@ -14,27 +14,161 @@ PORT = int(os.getenv("PORT", "10000"))
 DB_FILE = "points_data.json"
 
 # ------------------------------
-# Setup Logging
+# Logging Setup
 # ------------------------------
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ------------------------------
 # Helper Functions
 # ------------------------------
 def load_data():
+    """Load user points data from JSON."""
     if not os.path.exists(DB_FILE):
         return {}
     with open(DB_FILE, "r") as f:
         return json.load(f)
 
 def save_data(data):
+    """Save user points data to JSON."""
     with open(DB_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
 def is_admin(user_id):
+    """Check if a user is an admin."""
     return user_id in ADMIN_IDS
 
 # ------------------------------
+# Telegram Command Handlers
+# ------------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Points Bot is active! Use /victory, /minus, /mypoints, /besthunters."
+    )
+
+async def mypoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    data = load_data()
+
+    if user_id not in data:
+        data[user_id] = {
+            "username": f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name,
+            "points": 0,
+        }
+        save_data(data)
+
+    points = data[user_id]["points"]
+    await update.message.reply_text(f"⭐ You have {points} points.")
+
+async def victory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /victory @username 50")
+        return
+
+    username = context.args[0].lstrip("@")
+    try:
+        points = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("⚠️ Points must be a number.")
+        return
+
+    data = load_data()
+    user = next((uid for uid, info in data.items() if info["username"].lstrip("@") == username), None)
+
+    if not user:
+        await update.message.reply_text("❌ User not found in the database.")
+        return
+
+    data[user]["points"] += points
+    save_data(data)
+    await update.message.reply_text(f"✅ Added {points} points to @{username}!")
+
+async def minus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /minus @username 50")
+        return
+
+    username = context.args[0].lstrip("@")
+    try:
+        points = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("⚠️ Points must be a number.")
+        return
+
+    data = load_data()
+    user = next((uid for uid, info in data.items() if info["username"].lstrip("@") == username), None)
+
+    if not user:
+        await update.message.reply_text("❌ User not found in the database.")
+        return
+
+    data[user]["points"] -= points
+    save_data(data)
+    await update.message.reply_text(f"✅ Deducted {points} points from @{username}!")
+
+async def besthunters(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    if not data:
+        await update.message.reply_text("No users found.")
+        return
+
+    leaderboard = sorted(data.items(), key=lambda x: x[1]["points"], reverse=True)
+    msg = "🏆 *Best Bounty Hunters* 🏆\n\n"
+    for i, (uid, info) in enumerate(leaderboard[:10], start=1):
+        msg += f"{i}. {info['username']} — {info['points']} pts\n"
+
+    await update.message.reply_markdown(msg)
+
+# ------------------------------
+# Flask and Webhook Setup
+# ------------------------------
+app = Flask(__name__)
+application = None  # Global variable for telegram application
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    """Receive Telegram updates via webhook."""
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.update_queue.put_nowait(update)
+    return "OK", 200
+
+@app.route("/")
+def home():
+    return "🤖 Telegram Points Bot is running successfully!", 200
+
+# ------------------------------
+# Main Async Setup
+# ------------------------------
+async def main():
+    global application
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Register command handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("mypoints", mypoints))
+    application.add_handler(CommandHandler("victory", victory))
+    application.add_handler(CommandHandler("minus", minus))
+    application.add_handler(CommandHandler("besthunters", besthunters))
+
+    # Setup webhook
+    await application.bot.delete_webhook()
+    webhook_url = os.getenv("RENDER_EXTERNAL_URL") + "/webhook"
+    await application.bot.set_webhook(url=webhook_url)
+
+    print(f"✅ Webhook set to {webhook_url}")
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+    app.run(host="0.0.0.0", port=PORT)# ------------------------------
 # Telegram Command Handlers
 # ------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -498,4 +632,5 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
