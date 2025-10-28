@@ -1,40 +1,155 @@
-import logging
 import os
 import json
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from pathlib import Path
+from flask import Flask, request
 
-# ------------------------------------------------------------
-# 🔧 Configuration Section
-# ------------------------------------------------------------
+# Load environment variables
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+PORT = int(os.getenv("PORT", "10000"))
 
-# Get bot token and admin IDs from environment variables (safe for Render)
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # You will set this in Render’s dashboard
-ADMIN_IDS = os.getenv("ADMIN_IDS", "")  # Comma-separated list of admin user IDs
-ADMIN_IDS = [int(x) for x in ADMIN_IDS.split(",") if x.strip().isdigit()]
+DB_FILE = "points_data.json"
 
-DATA_FILE = Path("points_data.json")
-
-# ------------------------------------------------------------
-# 🧠 Helper Functions
-# ------------------------------------------------------------
-
+# ------------------------------
+# Database Helper Functions
+# ------------------------------
 def load_data():
-    """Load user data from JSON file, or create an empty one if not found."""
-    if DATA_FILE.exists():
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    return {}
+    if not os.path.exists(DB_FILE):
+        return {}
+    with open(DB_FILE, "r") as f:
+        return json.load(f)
 
 def save_data(data):
-    """Save user data to JSON file."""
-    with open(DATA_FILE, "w") as f:
+    with open(DB_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-def get_user_key(update: Update):
-    """Get a unique key for a user (user_id as string)."""
-    return str(update.effective_user.id)
+# ------------------------------
+# Telegram Bot Functions
+# ------------------------------
+async def victory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text("Usage: /victory @username 50")
+        return
+
+    username = context.args[0].lstrip("@")
+    try:
+        points = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("⚠️ Points must be a number.")
+        return
+
+    data = load_data()
+    user = next((uid for uid, info in data.items() if info["username"] == f"@{username}"), None)
+
+    if not user:
+        await update.message.reply_text("User not found in the database.")
+        return
+
+    data[user]["points"] += points
+    save_data(data)
+    await update.message.reply_text(f"✅ Added {points} points to @{username}!")
+
+async def plus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await victory(update, context)
+
+async def minus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text("Usage: /minus @username 50")
+        return
+
+    username = context.args[0].lstrip("@")
+    try:
+        points = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("⚠️ Points must be a number.")
+        return
+
+    data = load_data()
+    user = next((uid for uid, info in data.items() if info["username"] == f"@{username}"), None)
+
+    if not user:
+        await update.message.reply_text("User not found in the database.")
+        return
+
+    data[user]["points"] -= points
+    save_data(data)
+    await update.message.reply_text(f"✅ Deducted {points} points from @{username}!")
+
+async def mypoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    data = load_data()
+
+    if user_id not in data:
+        data[user_id] = {"username": f"@{update.effective_user.username}", "points": 0}
+        save_data(data)
+
+    points = data[user_id]["points"]
+    await update.message.reply_text(f"⭐ You have {points} points.")
+
+async def besthunters(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    if not data:
+        await update.message.reply_text("No users found.")
+        return
+
+    leaderboard = sorted(data.items(), key=lambda x: x[1]["points"], reverse=True)
+    top = leaderboard[:10]
+    msg = "🏆 *Best Bounty Hunters* 🏆\n\n"
+    for i, (uid, info) in enumerate(top, start=1):
+        msg += f"{i}. {info['username']} — {info['points']} pts\n"
+
+    await update.message.reply_markdown(msg)
+
+# ------------------------------
+# Webhook and Flask Setup
+# ------------------------------
+app = Flask(__name__)
+application = None
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        application.update_queue.put_nowait(update)
+        return "OK", 200
+    return "ERROR", 400
+
+@app.route("/")
+def home():
+    return "🤖 Telegram Points Bot is running!", 200
+
+# ------------------------------
+# Main
+# ------------------------------
+async def main():
+    global application
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("victory", victory))
+    application.add_handler(CommandHandler("plus", plus))
+    application.add_handler(CommandHandler("minus", minus))
+    application.add_handler(CommandHandler("mypoints", mypoints))
+    application.add_handler(CommandHandler("besthunters", besthunters))
+
+    await application.bot.delete_webhook()
+    webhook_url = os.getenv("RENDER_EXTERNAL_URL") + "/webhook"
+    await application.bot.set_webhook(url=webhook_url)
+
+    print(f"✅ Webhook set to {webhook_url}")
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+    app.run(host="0.0.0.0", port=PORT)    return str(update.effective_user.id)
 
 def is_admin(user_id):
     """Check if the given user_id is in the admin list."""
@@ -171,4 +286,5 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
+
     main()
