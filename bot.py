@@ -1,18 +1,25 @@
 import os
 import json
+import logging
+from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from flask import Flask, request
 
-# Load environment variables
+# ------------------------------
+# Environment Variables
+# ------------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 PORT = int(os.getenv("PORT", "10000"))
-
 DB_FILE = "points_data.json"
 
 # ------------------------------
-# Database Helper Functions
+# Setup Logging
+# ------------------------------
+logging.basicConfig(level=logging.INFO)
+
+# ------------------------------
+# Helper Functions
 # ------------------------------
 def load_data():
     if not os.path.exists(DB_FILE):
@@ -24,17 +31,220 @@ def save_data(data):
     with open(DB_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
+
 # ------------------------------
-# Telegram Bot Functions
+# Telegram Command Handlers
 # ------------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 Points Bot is active! Use /victory, /minus, /mypoints, /besthunters.")
+
+async def mypoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    data = load_data()
+
+    if user_id not in data:
+        data[user_id] = {"username": f"@{update.effective_user.username}", "points": 0}
+        save_data(data)
+
+    points = data[user_id]["points"]
+    await update.message.reply_text(f"⭐ You have {points} points.")
+
 async def victory(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ You are not authorized to use this command.")
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
         return
 
-    if len(context.args) != 2:
+    if len(context.args) < 2:
         await update.message.reply_text("Usage: /victory @username 50")
         return
+
+    username = context.args[0].lstrip("@")
+    try:
+        points = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("⚠️ Points must be a number.")
+        return
+
+    data = load_data()
+    user = next((uid for uid, info in data.items() if info["username"] == f"@{username}"), None)
+
+    if not user:
+        await update.message.reply_text("❌ User not found in the database.")
+        return
+
+    data[user]["points"] += points
+    save_data(data)
+    await update.message.reply_text(f"✅ Added {points} points to @{username}!")
+
+async def minus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /minus @username 50")
+        return
+
+    username = context.args[0].lstrip("@")
+    try:
+        points = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("⚠️ Points must be a number.")
+        return
+
+    data = load_data()
+    user = next((uid for uid, info in data.items() if info["username"] == f"@{username}"), None)
+
+    if not user:
+        await update.message.reply_text("❌ User not found in the database.")
+        return
+
+    data[user]["points"] -= points
+    save_data(data)
+    await update.message.reply_text(f"✅ Deducted {points} points from @{username}!")
+
+async def besthunters(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    if not data:
+        await update.message.reply_text("No users found.")
+        return
+
+    leaderboard = sorted(data.items(), key=lambda x: x[1]["points"], reverse=True)
+    msg = "🏆 *Best Bounty Hunters* 🏆\n\n"
+    for i, (uid, info) in enumerate(leaderboard[:10], start=1):
+        msg += f"{i}. {info['username']} — {info['points']} pts\n"
+
+    await update.message.reply_markdown(msg)
+
+# ------------------------------
+# Flask and Webhook Setup
+# ------------------------------
+app = Flask(__name__)
+application = None
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.update_queue.put_nowait(update)
+    return "OK", 200
+
+@app.route("/")
+def home():
+    return "🤖 Telegram Points Bot is running!", 200
+
+# ------------------------------
+# Main Async Setup
+# ------------------------------
+async def main():
+    global application
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("mypoints", mypoints))
+    application.add_handler(CommandHandler("victory", victory))
+    application.add_handler(CommandHandler("minus", minus))
+    application.add_handler(CommandHandler("besthunters", besthunters))
+
+    await application.bot.delete_webhook()
+    webhook_url = os.getenv("RENDER_EXTERNAL_URL") + "/webhook"
+    await application.bot.set_webhook(url=webhook_url)
+
+    print(f"✅ Webhook set to {webhook_url}")
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+    app.run(host="0.0.0.0", port=PORT)    user = next((uid for uid, info in data.items() if info["username"] == f"@{username}"), None)
+
+    if not user:
+        await update.message.reply_text("❌ User not found in the database.")
+        return
+
+    data[user]["points"] += points
+    save_data(data)
+    await update.message.reply_text(f"✅ Added {points} points to @{username}!")
+
+async def minus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /minus @username 50")
+        return
+
+    username = context.args[0].lstrip("@")
+    try:
+        points = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("⚠️ Points must be a number.")
+        return
+
+    data = load_data()
+    user = next((uid for uid, info in data.items() if info["username"] == f"@{username}"), None)
+
+    if not user:
+        await update.message.reply_text("❌ User not found in the database.")
+        return
+
+    data[user]["points"] -= points
+    save_data(data)
+    await update.message.reply_text(f"✅ Deducted {points} points from @{username}!")
+
+async def besthunters(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    if not data:
+        await update.message.reply_text("No users found.")
+        return
+
+    leaderboard = sorted(data.items(), key=lambda x: x[1]["points"], reverse=True)
+    msg = "🏆 *Best Bounty Hunters* 🏆\n\n"
+    for i, (uid, info) in enumerate(leaderboard[:10], start=1):
+        msg += f"{i}. {info['username']} — {info['points']} pts\n"
+
+    await update.message.reply_markdown(msg)
+
+# ------------------------------
+# Flask and Webhook Setup
+# ------------------------------
+app = Flask(__name__)
+application = None
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.update_queue.put_nowait(update)
+    return "OK", 200
+
+@app.route("/")
+def home():
+    return "🤖 Telegram Points Bot is running!", 200
+
+# ------------------------------
+# Main Async Setup
+# ------------------------------
+async def main():
+    global application
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("mypoints", mypoints))
+    application.add_handler(CommandHandler("victory", victory))
+    application.add_handler(CommandHandler("minus", minus))
+    application.add_handler(CommandHandler("besthunters", besthunters))
+
+    await application.bot.delete_webhook()
+    webhook_url = os.getenv("RENDER_EXTERNAL_URL") + "/webhook"
+    await application.bot.set_webhook(url=webhook_url)
+
+    print(f"✅ Webhook set to {webhook_url}")
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+    app.run(host="0.0.0.0", port=PORT)        return
 
     username = context.args[0].lstrip("@")
     try:
@@ -288,3 +498,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
